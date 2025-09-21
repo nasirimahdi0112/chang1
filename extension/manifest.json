@@ -1,0 +1,30 @@
+{
+  "name": "Nobat.ir Doctor Scraper",
+  "description": "Scrape doctor information from Nobat.ir and export it to CSV.",
+  "version": "1.0.0",
+  "manifest_version": 3,
+  "permissions": [
+    "tabs",
+    "scripting",
+    "downloads",
+    "storage"
+  ],
+  "host_permissions": [
+    "https://nobat.ir/*"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Nobat.ir Doctor Scraper"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://nobat.ir/*"],
+      "js": ["content-script.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
