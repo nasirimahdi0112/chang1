@@ -49,6 +49,8 @@ const state = {
   visited: new Set(),
 };
 
+let autoDiscardableSettingSupported = true;
+
 let resolveConfigReady;
 const configReady = new Promise((resolve) => {
   resolveConfigReady = resolve;
@@ -262,6 +264,36 @@ function updateTab(tabId, updateProperties) {
   });
 }
 
+function isAutoDiscardablePropertyError(error) {
+  if (!error || typeof error.message !== "string") {
+    return false;
+  }
+  return (
+    error.message.includes("Unexpected property") &&
+    error.message.includes("autoDiscardable")
+  );
+}
+
+async function setTabAutoDiscardable(tabId, autoDiscardable) {
+  if (!autoDiscardableSettingSupported) {
+    return;
+  }
+
+  try {
+    await updateTab(tabId, { autoDiscardable });
+  } catch (error) {
+    if (isAutoDiscardablePropertyError(error)) {
+      autoDiscardableSettingSupported = false;
+      console.warn(
+        "autoDiscardable tab property is not supported in this browser. Continuing without it.",
+        error
+      );
+      return;
+    }
+    throw error;
+  }
+}
+
 function removeTab(tabId) {
   return new Promise((resolve, reject) => {
     chrome.tabs.remove(tabId, () => {
@@ -473,7 +505,6 @@ async function createScraperTab(url) {
   const createOptions = {
     url,
     active: false,
-    autoDiscardable: true,
   };
 
   if (Number.isInteger(state.listWindowId)) {
@@ -485,6 +516,9 @@ async function createScraperTab(url) {
 
   const tab = await createTab(createOptions);
   state.scraperTabId = tab.id;
+  if (typeof tab?.id === "number") {
+    await setTabAutoDiscardable(tab.id, true);
+  }
   await waitForTabLoad(tab.id);
   return tab.id;
 }
@@ -497,7 +531,10 @@ async function ensureScraperTab(url) {
 
   if (state.scraperTabId) {
     try {
-      await updateTab(state.scraperTabId, { url: targetUrl, active: false, autoDiscardable: true });
+      await updateTab(state.scraperTabId, { url: targetUrl, active: false });
+      if (Number.isInteger(state.scraperTabId)) {
+        await setTabAutoDiscardable(state.scraperTabId, true);
+      }
       await waitForTabLoad(state.scraperTabId);
       return state.scraperTabId;
     } catch (error) {
