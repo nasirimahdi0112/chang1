@@ -264,6 +264,18 @@ function updateTab(tabId, updateProperties) {
   });
 }
 
+function getTab(tabId) {
+  return new Promise((resolve, reject) => {
+    chrome.tabs.get(tabId, (tab) => {
+      if (chrome.runtime.lastError) {
+        reject(new Error(chrome.runtime.lastError.message));
+        return;
+      }
+      resolve(tab);
+    });
+  });
+}
+
 function isAutoDiscardablePropertyError(error) {
   if (!error || typeof error.message !== "string") {
     return false;
@@ -340,30 +352,37 @@ function sendMessageToTab(tabId, message) {
   });
 }
 
-function waitForTabLoad(tabId, timeoutMs = 45000) {
-  return new Promise((resolve, reject) => {
+async function waitForTabLoad(tabId, timeoutMs = 45000) {
+  async function getExistingTab() {
+    try {
+      return await getTab(tabId);
+    } catch (error) {
+      if (/No tab with id/i.test(error.message)) {
+        return null;
+      }
+      throw error;
+    }
+  }
+
+  const initialTab = await getExistingTab();
+  if (!initialTab) {
+    throw new Error("The tab was closed before loading completed.");
+  }
+
+  if (initialTab.status === "complete") {
+    return;
+  }
+
+  await new Promise((resolve, reject) => {
+    let finished = false;
+
     const timeout = setTimeout(() => {
-      cleanup();
-      reject(new Error("Timed out while waiting for the page to finish loading."));
-    }, timeoutMs);
-
-    function handleUpdate(updatedTabId, changeInfo) {
-      if (updatedTabId !== tabId) {
-        return;
-      }
-      if (changeInfo.status === "complete") {
+      if (!finished) {
+        finished = true;
         cleanup();
-        resolve();
+        reject(new Error("Timed out while waiting for the page to finish loading."));
       }
-    }
-
-    function handleRemoval(removedTabId) {
-      if (removedTabId !== tabId) {
-        return;
-      }
-      cleanup();
-      reject(new Error("The tab was closed before loading completed."));
-    }
+    }, timeoutMs);
 
     function cleanup() {
       clearTimeout(timeout);
@@ -371,8 +390,63 @@ function waitForTabLoad(tabId, timeoutMs = 45000) {
       chrome.tabs.onRemoved.removeListener(handleRemoval);
     }
 
+    function finish(error) {
+      if (finished) {
+        return;
+      }
+      finished = true;
+      cleanup();
+      if (error) {
+        reject(error);
+      } else {
+        resolve();
+      }
+    }
+
+    async function checkTabStatus() {
+      if (finished) {
+        return;
+      }
+      let tab;
+      try {
+        tab = await getExistingTab();
+      } catch (error) {
+        finish(error);
+        return;
+      }
+      if (!tab) {
+        finish(new Error("The tab was closed before loading completed."));
+        return;
+      }
+      if (tab.status === "complete") {
+        finish();
+      }
+    }
+
+    function handleUpdate(updatedTabId, changeInfo) {
+      if (updatedTabId !== tabId || finished) {
+        return;
+      }
+      if (changeInfo.status === "complete") {
+        finish();
+      } else if (changeInfo.status === "loading") {
+        // Ignore loading updates.
+      } else if (changeInfo.url !== undefined) {
+        checkTabStatus();
+      }
+    }
+
+    function handleRemoval(removedTabId) {
+      if (removedTabId !== tabId) {
+        return;
+      }
+      finish(new Error("The tab was closed before loading completed."));
+    }
+
     chrome.tabs.onUpdated.addListener(handleUpdate);
     chrome.tabs.onRemoved.addListener(handleRemoval);
+
+    checkTabStatus();
   });
 }
 
