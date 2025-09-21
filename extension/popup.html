@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Nobat.ir Doctor Scraper</title>
+    <style>
+      body {
+        font-family: Arial, Helvetica, sans-serif;
+        margin: 16px;
+        min-width: 260px;
+        color: #222;
+      }
+
+      h1 {
+        font-size: 16px;
+        margin: 0 0 12px;
+      }
+
+      .controls {
+        display: flex;
+        gap: 8px;
+        margin-bottom: 12px;
+      }
+
+      button {
+        padding: 6px 12px;
+        border: none;
+        border-radius: 4px;
+        background-color: #1976d2;
+        color: #fff;
+        cursor: pointer;
+        font-size: 13px;
+      }
+
+      button:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+
+      button.stop {
+        background-color: #c62828;
+      }
+
+      .field {
+        display: flex;
+        flex-direction: column;
+        margin-bottom: 10px;
+      }
+
+      .field label {
+        font-size: 12px;
+        margin-bottom: 4px;
+        color: #555;
+      }
+
+      .field input {
+        border: 1px solid #c7c7c7;
+        border-radius: 4px;
+        padding: 6px 8px;
+        font-size: 13px;
+      }
+
+      #status {
+        margin-top: 6px;
+        font-size: 13px;
+        font-weight: 600;
+      }
+
+      #progress,
+      #retry,
+      #last-doctor {
+        margin-top: 4px;
+        font-size: 12px;
+        color: #555;
+      }
+
+      #last-doctor a {
+        color: #1976d2;
+        text-decoration: none;
+      }
+
+      #last-doctor a:hover {
+        text-decoration: underline;
+      }
+
+      #retry {
+        color: #a15b00;
+      }
+
+      #errors {
+        margin-top: 8px;
+        color: #c62828;
+        font-size: 12px;
+        white-space: pre-line;
+        display: none;
+      }
+
+      .muted {
+        color: #777;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Nobat.ir Scraper</h1>
+    <div class="controls">
+      <button id="start">Start</button>
+      <button id="stop" class="stop">Stop</button>
+    </div>
+    <div class="field">
+      <label for="delay">Delay between profiles (seconds)</label>
+      <input id="delay" type="number" min="0" step="0.5" value="2.5" />
+    </div>
+    <div class="field">
+      <label for="retries">Max retries per profile</label>
+      <input id="retries" type="number" min="0" max="5" step="1" value="2" />
+    </div>
+    <div id="status">Status: Idle</div>
+    <div id="progress" class="muted"></div>
+    <div id="last-doctor" class="muted"></div>
+    <div id="retry"></div>
+    <div id="errors"></div>
+    <script src="popup.js"></script>
+  </body>
+</html>
