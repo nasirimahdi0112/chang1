@@ -552,7 +552,11 @@ async function updateStatus(partial = {}) {
     status.retrying = partial.retrying;
   }
 
-  await chrome.storage.local.set({ [STATUS_STORAGE_KEY]: status });
+  try {
+    await chrome.storage.local.set({ [STATUS_STORAGE_KEY]: status });
+  } catch (error) {
+    console.warn("Failed to persist status", error);
+  }
 
   try {
     chrome.runtime.sendMessage({ type: "SCRAPE_STATUS", payload: status });
@@ -579,12 +583,16 @@ async function applyConfig(partialConfig = {}, { persist = false } = {}) {
   state.maxRetries = updated.maxRetries;
 
   if (persist) {
-    await chrome.storage.local.set({
-      [CONFIG_STORAGE_KEY]: {
-        delayMs: state.delayMs,
-        maxRetries: state.maxRetries,
-      },
-    });
+    try {
+      await chrome.storage.local.set({
+        [CONFIG_STORAGE_KEY]: {
+          delayMs: state.delayMs,
+          maxRetries: state.maxRetries,
+        },
+      });
+    } catch (error) {
+      console.warn("Failed to persist configuration", error);
+    }
   }
 
   return { delayMs: state.delayMs, maxRetries: state.maxRetries };
@@ -766,6 +774,7 @@ async function finaliseScraping({ partial = false } = {}) {
   const filename = `${prefix}-${timestamp}.csv`;
 
   const rows = state.results.map((item) => ({
+    url: item.url,
     name: item.name,
     specialty: item.specialty,
     code: item.code,
@@ -773,6 +782,7 @@ async function finaliseScraping({ partial = false } = {}) {
     address: item.address,
     phones: item.phones,
     offices: item.offices ?? [],
+    error: item.error ?? null,
   }));
 
   try {
@@ -841,28 +851,32 @@ async function processQueue() {
     try {
       const data = await scrapeDoctorProfileWithRetries(url);
       clearError(url);
-      state.results.push(data);
+      state.results.push({ ...data, error: null });
       state.lastDoctor = {
         name: data.name || data.url || url,
         url: data.url || url,
       };
     } catch (error) {
       console.error("Failed to scrape doctor page", url, error);
-      recordError(url, error.message);
-      state.results.push(
-        normaliseDoctorData(
-          {
-            name: "",
-            specialty: "",
-            code: "",
-            city: "",
-            addresses: [],
-            phones: [],
-            offices: [],
-          },
-          url
-        )
+      const message = error?.message || "Unknown error";
+      recordError(url, message);
+      const fallbackData = normaliseDoctorData(
+        {
+          name: "",
+          specialty: "",
+          code: "",
+          city: "",
+          addresses: [],
+          phones: [],
+          offices: [],
+        },
+        url
       );
+      state.results.push({ ...fallbackData, error: message });
+      state.lastDoctor = {
+        name: `${fallbackData.name || fallbackData.url || url} (failed)`,
+        url: fallbackData.url || url,
+      };
     }
 
     state.currentIndex += 1;

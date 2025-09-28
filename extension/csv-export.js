@@ -1,24 +1,51 @@
 const BASE_HEADERS = [
+  { label: "Profile URL", key: "url" },
   { label: "Name", key: "name" },
   { label: "Specialty", key: "specialty" },
   { label: "Code", key: "code" },
   { label: "City", key: "city" },
-  { label: "Address", key: "address" },
+  { label: "Addresses", key: "address" },
   { label: "Phones", key: "phones" },
+  { label: "Error", key: "error" },
 ];
 const UTF8_BOM = "\ufeff";
 
-function normaliseValue(value) {
-  if (Array.isArray(value)) {
-    const unique = Array.from(new Set(value.map((item) => String(item || "").trim()).filter(Boolean)));
-    return unique.join("; ");
-  }
-
+function toPrintableValue(value) {
   if (value === undefined || value === null) {
     return "";
   }
+  if (typeof value === "string") {
+    return value;
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  if (value instanceof Date) {
+    return value.toISOString();
+  }
+  if (typeof value === "object") {
+    try {
+      return JSON.stringify(value);
+    } catch (error) {
+      return String(value);
+    }
+  }
+  return String(value);
+}
 
-  return String(value).trim();
+function normaliseValue(value) {
+  if (Array.isArray(value)) {
+    const unique = Array.from(
+      new Set(
+        value
+          .map((item) => toPrintableValue(item).trim())
+          .filter((item) => item.length > 0)
+      )
+    );
+    return unique.join("; ");
+  }
+
+  return toPrintableValue(value).trim();
 }
 
 function escapeCsvValue(value) {
