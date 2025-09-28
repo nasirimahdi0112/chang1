@@ -126,6 +126,39 @@ function toNormalisedPhoneList(...values) {
   return uniqueNormalisedList(collectValues(...values), normalisePhoneValue, phoneKey);
 }
 
+function normaliseOfficeList(offices) {
+  if (!Array.isArray(offices)) {
+    return [];
+  }
+
+  const normalised = [];
+  const seen = new Set();
+
+  offices.forEach((office) => {
+    if (!office || typeof office !== "object") {
+      return;
+    }
+
+    const city = normaliseText(office.city || "");
+    const addresses = toNormalisedList(office.addresses, office.address);
+    const phones = toNormalisedPhoneList(office.phones, office.phone);
+
+    if (!city && !addresses.length && !phones.length) {
+      return;
+    }
+
+    const key = `${city}||${addresses.join("||")}||${phones.join("||")}`;
+    if (seen.has(key)) {
+      return;
+    }
+    seen.add(key);
+
+    normalised.push({ city, addresses, phones });
+  });
+
+  return normalised;
+}
+
 function cleanDoctorCode(rawValue) {
   const text = normaliseText(rawValue);
   if (!text) {
@@ -136,19 +169,33 @@ function cleanDoctorCode(rawValue) {
 }
 
 function normaliseDoctorData(data = {}, url) {
-  const addresses = toNormalisedList(data.addresses, data.address);
-  const phones = toNormalisedPhoneList(data.phones, data.phone);
+  const offices = normaliseOfficeList(data.offices);
+  const addresses = toNormalisedList(
+    data.addresses,
+    data.address,
+    offices.flatMap((office) => office.addresses)
+  );
+  const phones = toNormalisedPhoneList(
+    data.phones,
+    data.phone,
+    offices.flatMap((office) => office.phones)
+  );
 
   const resolvedUrl = typeof url === "string" && url.length ? url : data.url || "";
+
+  const resolvedCity = normaliseText(
+    data.city || offices.find((office) => office.city)?.city || ""
+  );
 
   return {
     url: resolvedUrl,
     name: normaliseText(data.name || ""),
     specialty: normaliseText(data.specialty || ""),
     code: cleanDoctorCode(data.code || data.doctorCode || ""),
-    city: normaliseText(data.city || ""),
+    city: resolvedCity,
     address: addresses,
     phones,
+    offices,
   };
 }
 
@@ -725,6 +772,7 @@ async function finaliseScraping({ partial = false } = {}) {
     city: item.city,
     address: item.address,
     phones: item.phones,
+    offices: item.offices ?? [],
   }));
 
   try {
@@ -810,6 +858,7 @@ async function processQueue() {
             city: "",
             addresses: [],
             phones: [],
+            offices: [],
           },
           url
         )

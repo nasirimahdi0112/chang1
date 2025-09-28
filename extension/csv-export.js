@@ -1,4 +1,11 @@
-const CSV_HEADERS = ["Name", "Specialty", "Code", "City", "Address", "Phones"];
+const BASE_HEADERS = [
+  { label: "Name", key: "name" },
+  { label: "Specialty", key: "specialty" },
+  { label: "Code", key: "code" },
+  { label: "City", key: "city" },
+  { label: "Address", key: "address" },
+  { label: "Phones", key: "phones" },
+];
 const UTF8_BOM = "\ufeff";
 
 function normaliseValue(value) {
@@ -23,14 +30,39 @@ function escapeCsvValue(value) {
 }
 
 export function convertToCsv(rows) {
-  const headerLine = CSV_HEADERS.join(",");
-  const dataLines = rows.map((row) => {
-    return CSV_HEADERS
-      .map((header) => {
-        const key = header.toLowerCase();
-        return escapeCsvValue(row[key]);
-      })
-      .join(",");
+  const normalisedRows = Array.isArray(rows) ? rows : [];
+  const maxOfficeCount = normalisedRows.reduce((max, row) => {
+    const offices = Array.isArray(row?.offices) ? row.offices : [];
+    return Math.max(max, offices.length);
+  }, 0);
+
+  const dynamicHeaders = [];
+  for (let index = 0; index < maxOfficeCount; index += 1) {
+    const position = index + 1;
+    dynamicHeaders.push(
+      { label: `Office ${position} City`, key: `office_${index}_city` },
+      { label: `Office ${position} Address`, key: `office_${index}_address` },
+      { label: `Office ${position} Phones`, key: `office_${index}_phones` }
+    );
+  }
+
+  const headers = [...BASE_HEADERS, ...dynamicHeaders];
+  const headerLine = headers.map((header) => header.label).join(",");
+
+  const dataLines = normalisedRows.map((row) => {
+    const offices = Array.isArray(row?.offices) ? row.offices : [];
+
+    const baseValues = BASE_HEADERS.map((header) => escapeCsvValue(row?.[header.key]));
+
+    const officeValues = [];
+    for (let index = 0; index < maxOfficeCount; index += 1) {
+      const office = offices[index] || {};
+      officeValues.push(escapeCsvValue(office.city));
+      officeValues.push(escapeCsvValue(office.addresses || office.address));
+      officeValues.push(escapeCsvValue(office.phones));
+    }
+
+    return [...baseValues, ...officeValues].join(",");
   });
 
   return [headerLine, ...dataLines].join("\n");

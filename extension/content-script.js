@@ -470,48 +470,143 @@ function normaliseAddressText(text) {
   return normaliseText(text);
 }
 
+function createPhoneCollector() {
+  return createCollector(normalisePhoneText, (_, value) => normalisePhoneKey(value));
+}
+
+function collectPhonesFromElement(root, collector) {
+  const phoneContainers = Array.from(root.querySelectorAll(PHONE_CONTAINER_SELECTORS.join(",")));
+  const elementsToScan = phoneContainers.length ? phoneContainers : [root];
+
+  elementsToScan.forEach((element) => {
+    const rawText = normaliseWhitespace(element.textContent || "");
+    if (!rawText) {
+      return;
+    }
+    rawText
+      .split(/\n|،|,|؛|;|\||\//)
+      .map((item) => item.trim())
+      .forEach((item) => addPhoneCandidate(collector, item));
+  });
+
+  const telLinks = Array.from(root.querySelectorAll("a[href^='tel:']"));
+  telLinks.forEach((link) => {
+    const href = link.getAttribute("href") || "";
+    addPhoneCandidate(collector, href.replace(/^tel:/i, ""));
+    addPhoneCandidate(collector, link.textContent || "");
+  });
+
+  const dataSelectors = ["[data-phone]", "[data-tel]", "[data-tell]", "[data-mobile]", "[data-number]", "[data-phones]"];
+  dataSelectors.forEach((selector) => {
+    const elements = Array.from(root.querySelectorAll(selector));
+    elements.forEach((element) => {
+      const attrName = selector.replace(/[\[\]]/g, "");
+      const attrValue = element.getAttribute(attrName);
+      addPhoneCandidate(collector, attrValue);
+      if (element.dataset) {
+        Object.keys(element.dataset)
+          .filter((key) => /phone|tel|mobile|number/i.test(key))
+          .forEach((key) => addPhoneCandidate(collector, element.dataset[key]));
+      }
+    });
+  });
+}
+
 function collectOfficeAddresses(structuredEntries) {
+  const offices = [];
+  const officeSeen = new Set();
   const addressCollector = createCollector(normaliseAddressText);
   const cityCollector = createCollector(normaliseText);
+  const processedAddressNodes = new Set();
+
+  function pushOffice(details) {
+    if (!details) {
+      return;
+    }
+
+    const officeCityCollector = createCollector(normaliseText);
+    const officeAddressCollector = createCollector(normaliseAddressText);
+    const officePhoneCollector = createPhoneCollector();
+
+    if (details.city) {
+      officeCityCollector.add(details.city);
+    }
+    const addresses = Array.isArray(details.addresses)
+      ? details.addresses
+      : details.addresses
+      ? [details.addresses]
+      : [];
+    addresses.forEach((address) => officeAddressCollector.add(address));
+
+    const phones = Array.isArray(details.phones)
+      ? details.phones
+      : details.phones
+      ? [details.phones]
+      : [];
+    phones.forEach((phone) => officePhoneCollector.add(phone));
+
+    const city = officeCityCollector.values().find(Boolean) || "";
+    const normalisedAddresses = officeAddressCollector.values();
+    const normalisedPhones = officePhoneCollector.values();
+
+    if (!city && !normalisedAddresses.length && !normalisedPhones.length) {
+      return;
+    }
+
+    const key = [city, normalisedAddresses.join("||"), normalisedPhones.join("||")].join("@@");
+    if (officeSeen.has(key)) {
+      return;
+    }
+    officeSeen.add(key);
+
+    offices.push({ city, addresses: normalisedAddresses, phones: normalisedPhones });
+  }
+
+  function addAddressNode(node, cityTarget = cityCollector, addressTarget = addressCollector) {
+    if (!node) {
+      return;
+    }
+    processedAddressNodes.add(node);
+    const strongs = Array.from(node.querySelectorAll("strong"));
+    if (strongs.length > 1) {
+      cityTarget.add(strongs[0]?.textContent);
+      addressTarget.add(strongs[strongs.length - 1]?.textContent);
+    } else if (strongs.length === 1) {
+      addressTarget.add(strongs[0].textContent);
+    } else {
+      addressTarget.add(node.textContent);
+    }
+  }
 
   const officeContainers = Array.from(
-    document.querySelectorAll(".office, .doctor-office, .office-item, .doctor-ui-office")
+    document.querySelectorAll(
+      ".office, .doctor-office, .office-item, .doctor-ui-office, .doctor-ui__office, .office-info"
+    )
   );
 
   officeContainers.forEach((office) => {
-    const cityData = office.getAttribute("data-city") || office.dataset?.city;
-    cityCollector.add(cityData);
+    const officeCityCollector = createCollector(normaliseText);
+    officeCityCollector.add(office.getAttribute("data-city") || office.dataset?.city);
 
+    const officeAddressCollector = createCollector(normaliseAddressText);
     const addressNodes = Array.from(office.querySelectorAll(ADDRESS_CONTAINER_SELECTORS.join(",")));
     if (addressNodes.length) {
       addressNodes.forEach((node) => {
-        const strongs = Array.from(node.querySelectorAll("strong"));
-        if (strongs.length > 1) {
-          cityCollector.add(strongs[0]?.textContent);
-          addressCollector.add(strongs[strongs.length - 1]?.textContent);
-        } else if (strongs.length === 1) {
-          addressCollector.add(strongs[0].textContent);
-        } else {
-          addressCollector.add(node.textContent);
-        }
+        addAddressNode(node, officeCityCollector, officeAddressCollector);
       });
     } else {
-      addressCollector.add(office.textContent);
+      officeAddressCollector.add(office.textContent);
     }
-  });
 
-  if (!officeContainers.length) {
-    const fallbackNodes = Array.from(document.querySelectorAll(ADDRESS_CONTAINER_SELECTORS.join(",")));
-    fallbackNodes.forEach((node) => {
-      const strongs = Array.from(node.querySelectorAll("strong"));
-      if (strongs.length > 1) {
-        cityCollector.add(strongs[0]?.textContent);
-        addressCollector.add(strongs[strongs.length - 1]?.textContent);
-      } else {
-        addressCollector.add(node.textContent);
-      }
+    const phoneCollector = createPhoneCollector();
+    collectPhonesFromElement(office, phoneCollector);
+
+    pushOffice({
+      city: officeCityCollector.values().find(Boolean) || "",
+      addresses: officeAddressCollector.values(),
+      phones: phoneCollector.values(),
     });
-  }
+  });
 
   const locality = document.querySelector("[itemprop='addressLocality']");
   if (locality) {
@@ -522,6 +617,93 @@ function collectOfficeAddresses(structuredEntries) {
     if (entry?.addressLocality) {
       cityCollector.add(entry.addressLocality);
     }
+
+    const addressCandidates = entry?.address;
+    const addressList = Array.isArray(addressCandidates)
+      ? addressCandidates
+      : addressCandidates
+      ? [addressCandidates]
+      : [];
+
+    if (!addressList.length && (entry?.streetAddress || entry?.telephone || entry?.addressLocality)) {
+      pushOffice({
+        city: entry.addressLocality || entry.addressRegion || "",
+        addresses: entry.streetAddress ? [entry.streetAddress] : [],
+        phones: entry.telephone ? [entry.telephone] : [],
+      });
+    }
+
+    addressList.forEach((address) => {
+      if (!address) {
+        return;
+      }
+      if (typeof address === "string") {
+        pushOffice({ city: "", addresses: [address], phones: [] });
+        return;
+      }
+
+      const officeCityCollector = createCollector(normaliseText);
+      if (address.addressLocality) {
+        officeCityCollector.add(address.addressLocality);
+      }
+      if (address.addressRegion) {
+        officeCityCollector.add(address.addressRegion);
+      }
+
+      const officeAddressCollector = createCollector(normaliseAddressText);
+      if (address.streetAddress) {
+        officeAddressCollector.add(address.streetAddress);
+      }
+
+      const phoneCollector = createPhoneCollector();
+      addPhoneCandidate(phoneCollector, address.telephone);
+
+      pushOffice({
+        city: officeCityCollector.values().find(Boolean) || "",
+        addresses: officeAddressCollector.values(),
+        phones: phoneCollector.values(),
+      });
+    });
+  });
+
+  if (!offices.length) {
+    const fallbackAddressCollector = createCollector(normaliseAddressText);
+    const fallbackCityCollector = createCollector(normaliseText);
+
+    const fallbackNodes = Array.from(document.querySelectorAll(ADDRESS_CONTAINER_SELECTORS.join(",")));
+    fallbackNodes.forEach((node) => {
+      if (processedAddressNodes.has(node)) {
+        return;
+      }
+      addAddressNode(node, fallbackCityCollector, fallbackAddressCollector);
+    });
+
+    const fallbackAddresses = fallbackAddressCollector.values();
+    const fallbackCity = fallbackCityCollector.values().find(Boolean) || "";
+
+    if (fallbackAddresses.length || fallbackCity) {
+      pushOffice({
+        city: fallbackCity,
+        addresses: fallbackAddresses,
+        phones: collectPhoneNumbers(structuredEntries),
+      });
+    }
+  }
+
+  offices.forEach((office) => {
+    cityCollector.add(office.city);
+    office.addresses.forEach((address) => addressCollector.add(address));
+  });
+
+  const fallbackNodes = Array.from(document.querySelectorAll(ADDRESS_CONTAINER_SELECTORS.join(",")));
+  fallbackNodes.forEach((node) => {
+    if (processedAddressNodes.has(node)) {
+      return;
+    }
+    addAddressNode(node);
+  });
+
+  structuredEntries.forEach((entry) => {
     const addresses = entry?.address;
     const addressList = Array.isArray(addresses) ? addresses : addresses ? [addresses] : [];
     addressList.forEach((address) => {
@@ -544,7 +726,7 @@ function collectOfficeAddresses(structuredEntries) {
   const addresses = addressCollector.values();
   const city = cityCollector.values().find(Boolean) || "";
 
-  return { city, addresses };
+  return { city, addresses, offices };
 }
 
 function addPhoneCandidate(collector, value) {
@@ -673,7 +855,7 @@ async function scrapeDoctorDetails() {
 
   await revealPhoneNumbers();
 
-  const { city, addresses } = collectOfficeAddresses(structuredEntries);
+  const { city, addresses, offices } = collectOfficeAddresses(structuredEntries);
 
   return {
     name: extractDoctorName(structuredEntries),
@@ -682,6 +864,7 @@ async function scrapeDoctorDetails() {
     city,
     addresses,
     phones: collectPhoneNumbers(structuredEntries),
+    offices,
     url: window.location.href,
   };
 }
