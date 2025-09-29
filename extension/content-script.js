@@ -48,6 +48,20 @@ const DOCTOR_LINK_ATTRIBUTE_SELECTORS = [
   "[data-link]",
 ];
 
+const NEXT_PAGE_SELECTORS = [
+  "a[rel='next']",
+  "a.pagination-next",
+  ".pagination a.next",
+  ".pagination li.next a",
+  ".pagination li.active + li a",
+  "a[aria-label='Next']",
+  "a[aria-label='next']",
+  "a[aria-label='بعد']",
+  "a[aria-label='بعدی']",
+  "a[aria-label*='بعد']",
+  "a[aria-label*='next']",
+];
+
 const PHONE_CONTAINER_SELECTORS = [
   ".office-description",
   ".office-contact",
@@ -325,10 +339,149 @@ function collectDoctorLinksFromDom() {
   return Array.from(links);
 }
 
+function isPaginationElementDisabled(element) {
+  if (!element) {
+    return true;
+  }
+  if (element.getAttribute && element.getAttribute("aria-disabled") === "true") {
+    return true;
+  }
+  if (
+    element.classList &&
+    (element.classList.contains("disabled") || element.classList.contains("d-none"))
+  ) {
+    return true;
+  }
+  const parent = element.closest ? element.closest("li") : null;
+  if (parent) {
+    if (parent.getAttribute("aria-disabled") === "true") {
+      return true;
+    }
+    if (parent.classList.contains("disabled") || parent.classList.contains("d-none")) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function normalisePaginationUrl(href) {
+  if (!href) {
+    return null;
+  }
+  const trimmed = href.trim();
+  if (!trimmed || trimmed === "#") {
+    return null;
+  }
+  if (/^javascript:/i.test(trimmed)) {
+    return null;
+  }
+  return toAbsoluteUrl(trimmed);
+}
+
+function collectPaginationCandidates() {
+  const candidates = new Set();
+  NEXT_PAGE_SELECTORS.forEach((selector) => {
+    document.querySelectorAll(selector).forEach((element) => {
+      candidates.add(element);
+    });
+  });
+
+  const paginationContainers = Array.from(
+    document.querySelectorAll(
+      ".pagination, nav[aria-label*='page'], nav[aria-label*='صفحه'], nav[role='navigation']"
+    )
+  );
+
+  paginationContainers.forEach((container) => {
+    const active = container.querySelector("li.active, .active");
+    if (active) {
+      let nextSibling = active.nextElementSibling;
+      while (nextSibling) {
+        const anchor = nextSibling.querySelector ? nextSibling.querySelector("a[href]") : null;
+        if (anchor) {
+          candidates.add(anchor);
+          break;
+        }
+        nextSibling = nextSibling.nextElementSibling;
+      }
+    }
+
+    container.querySelectorAll("a[href]").forEach((anchor) => {
+      candidates.add(anchor);
+    });
+  });
+
+  return Array.from(candidates);
+}
+
+function findNextPageUrl() {
+  const candidates = collectPaginationCandidates();
+  const scored = [];
+
+  candidates.forEach((candidate, index) => {
+    if (!candidate || isPaginationElementDisabled(candidate)) {
+      return;
+    }
+    const url = normalisePaginationUrl(candidate.getAttribute("href"));
+    if (!url) {
+      return;
+    }
+
+    const text = normaliseWhitespace(candidate.textContent || "").toLowerCase();
+    const aria = normaliseWhitespace(
+      (typeof candidate.getAttribute === "function" && candidate.getAttribute("aria-label")) || ""
+    ).toLowerCase();
+
+    let priority = 5 + index;
+    const hasNextRel = candidate.rel && /next/i.test(candidate.rel);
+    if (hasNextRel) {
+      priority = Math.min(priority, 0);
+    }
+    const looksLikeNext = /(\u0628\u0639\u062f|\u0628\u0639\u062f\u06cc|next|›|»)/i.test(text);
+    if (looksLikeNext) {
+      priority = Math.min(priority, 1);
+    }
+    const ariaIndicatesNext = /(\u0628\u0639\u062f|\u0628\u0639\u062f\u06cc|next)/i.test(aria);
+    if (ariaIndicatesNext) {
+      priority = Math.min(priority, 1);
+    }
+
+    const parent = candidate.closest ? candidate.closest("li") : null;
+    const hasNextClass = !!(
+      candidate.classList && Array.from(candidate.classList).some((cls) => /next|\u0628\u0639\u062f/i.test(cls))
+    );
+    const afterActive =
+      parent &&
+      parent.previousElementSibling &&
+      parent.previousElementSibling.classList &&
+      parent.previousElementSibling.classList.contains("active");
+
+    if (afterActive) {
+      priority = Math.min(priority, 2);
+    }
+
+    const qualifies = hasNextRel || looksLikeNext || ariaIndicatesNext || hasNextClass;
+    if (!qualifies && !afterActive) {
+      return;
+    }
+
+    scored.push({ url, priority });
+  });
+
+  if (!scored.length) {
+    return null;
+  }
+
+  scored.sort((a, b) => a.priority - b.priority);
+  return scored[0].url;
+}
+
 async function gatherDoctorLinks() {
   await waitForElement("a.doctor-ui, [data-profile-url]");
   await loadAdditionalDoctorCards();
-  return collectDoctorLinksFromDom();
+  const links = collectDoctorLinksFromDom();
+  const nextPageUrl = findNextPageUrl();
+  return { links, nextPageUrl };
 }
 
 function extractText(selector, root = document) {
@@ -424,6 +577,33 @@ function extractDoctorSpecialty(structuredEntries) {
   return "";
 }
 
+function extractCodeToken(text) {
+  if (!text) {
+    return "";
+  }
+
+  const primaryMatch = text.match(/(?:\p{L}\s*)?\d+(?:\s*\p{L})?/u);
+  if (primaryMatch && primaryMatch[0]) {
+    return primaryMatch[0].replace(/\s+/g, "");
+  }
+
+  const tokens = text.split(/[^0-9\p{L}]+/u).filter(Boolean);
+  let numericFallback = "";
+
+  for (const token of tokens) {
+    if (/\d/.test(token)) {
+      if (/\p{L}/u.test(token)) {
+        return token;
+      }
+      if (!numericFallback) {
+        numericFallback = token;
+      }
+    }
+  }
+
+  return numericFallback;
+}
+
 function extractDoctorCode(structuredEntries) {
   const candidates = [];
   const primary = document.querySelector(".doctor-code span:last-child");
@@ -439,20 +619,64 @@ function extractDoctorCode(structuredEntries) {
     candidates.push(meta.textContent);
   }
 
-  structuredEntries.forEach((entry) => {
-    if (entry?.identifier) {
-      candidates.push(entry.identifier);
+  const structuredCandidates = [];
+  function collectStructuredCodeValues(value) {
+    if (value === undefined || value === null) {
+      return;
     }
+    if (Array.isArray(value)) {
+      value.forEach((item) => collectStructuredCodeValues(item));
+      return;
+    }
+    if (typeof value === "object") {
+      const keys = [
+        "value",
+        "identifier",
+        "code",
+        "id",
+        "medicalLicense",
+        "medicalLicence",
+        "medicalLicenseNumber",
+        "medicalLicenceNumber",
+        "registrationNumber",
+        "registrationNo",
+        "license",
+        "licence",
+        "number",
+      ];
+      keys.forEach((key) => {
+        if (key in value) {
+          collectStructuredCodeValues(value[key]);
+        }
+      });
+      return;
+    }
+    structuredCandidates.push(value);
+  }
+
+  structuredEntries.forEach((entry) => {
+    if (!entry || typeof entry !== "object") {
+      return;
+    }
+    collectStructuredCodeValues(entry.identifier);
+    collectStructuredCodeValues(entry.medicalLicenseNumber);
+    collectStructuredCodeValues(entry.medicalLicense);
+    collectStructuredCodeValues(entry.medicalLicence);
+    collectStructuredCodeValues(entry.license);
+    collectStructuredCodeValues(entry.licence);
+    collectStructuredCodeValues(entry.registrationNumber);
   });
+
+  structuredCandidates.forEach((value) => candidates.push(value));
 
   for (const candidate of candidates) {
     const text = normaliseText(candidate);
     if (!text) {
       continue;
     }
-    const digits = text.replace(/[^0-9]/g, "");
-    if (digits) {
-      return digits;
+    const parsed = extractCodeToken(text);
+    if (parsed) {
+      return parsed;
     }
   }
 
@@ -877,8 +1101,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === "GET_DOCTOR_LINKS") {
     (async () => {
       try {
-        const links = await gatherDoctorLinks();
-        sendResponse({ links });
+        const { links, nextPageUrl } = await gatherDoctorLinks();
+        sendResponse({ links, nextPageUrl });
       } catch (error) {
         console.error("Failed to gather doctor links", error);
         sendResponse({ error: error.message });

@@ -39,6 +39,7 @@ const state = {
   listTabId: null,
   listWindowId: null,
   listTabIndex: null,
+  listInitialUrl: null,
   scraperTabId: null,
   delayMs: DEFAULT_CONFIG.delayMs,
   maxRetries: DEFAULT_CONFIG.maxRetries,
@@ -159,13 +160,94 @@ function normaliseOfficeList(offices) {
   return normalised;
 }
 
-function cleanDoctorCode(rawValue) {
-  const text = normaliseText(rawValue);
+function extractCodeToken(text) {
   if (!text) {
     return "";
   }
-  const digits = text.replace(/[^0-9]/g, "");
-  return digits || text;
+
+  const primaryMatch = text.match(/(?:\p{L}\s*)?\d+(?:\s*\p{L})?/u);
+  if (primaryMatch && primaryMatch[0]) {
+    return primaryMatch[0].replace(/\s+/g, "");
+  }
+
+  const tokens = text.split(/[^0-9\p{L}]+/u).filter(Boolean);
+  let numericFallback = "";
+
+  for (const token of tokens) {
+    if (/\d/.test(token)) {
+      if (/\p{L}/u.test(token)) {
+        return token;
+      }
+      if (!numericFallback) {
+        numericFallback = token;
+      }
+    }
+  }
+
+  return numericFallback;
+}
+
+const CODE_VALUE_KEYS = [
+  "value",
+  "identifier",
+  "code",
+  "id",
+  "medicalLicense",
+  "medicalLicence",
+  "medicalLicenseNumber",
+  "medicalLicenceNumber",
+  "registrationNumber",
+  "registrationNo",
+  "license",
+  "licence",
+  "number",
+];
+
+function collectCodeCandidates(value, collector) {
+  if (value === undefined || value === null) {
+    return;
+  }
+
+  if (Array.isArray(value)) {
+    value.forEach((item) => collectCodeCandidates(item, collector));
+    return;
+  }
+
+  if (typeof value === "object") {
+    CODE_VALUE_KEYS.forEach((key) => {
+      if (key in value) {
+        collectCodeCandidates(value[key], collector);
+      }
+    });
+    return;
+  }
+
+  collector.push(value);
+}
+
+function cleanDoctorCode(rawValue) {
+  const candidates = [];
+  collectCodeCandidates(rawValue, candidates);
+  if (!candidates.length) {
+    candidates.push(rawValue);
+  }
+
+  let fallback = "";
+  for (const candidate of candidates) {
+    const text = normaliseText(candidate);
+    if (!text) {
+      continue;
+    }
+    const parsed = extractCodeToken(text);
+    if (parsed) {
+      return parsed;
+    }
+    if (!fallback) {
+      fallback = text;
+    }
+  }
+
+  return fallback;
 }
 
 function normaliseDoctorData(data = {}, url) {
@@ -598,34 +680,125 @@ async function applyConfig(partialConfig = {}, { persist = false } = {}) {
   return { delayMs: state.delayMs, maxRetries: state.maxRetries };
 }
 
-async function getDoctorLinksFromTab(tabId) {
-  let response;
+async function requestDoctorLinksFromTab(tabId) {
   try {
-    response = await sendMessageToTab(tabId, { type: "GET_DOCTOR_LINKS" });
+    return await sendMessageToTab(tabId, { type: "GET_DOCTOR_LINKS" });
   } catch (error) {
     if (/Receiving end does not exist/i.test(error.message)) {
       await injectContentScript(tabId);
-      response = await sendMessageToTab(tabId, { type: "GET_DOCTOR_LINKS" });
-    } else {
-      throw error;
+      return await sendMessageToTab(tabId, { type: "GET_DOCTOR_LINKS" });
     }
+    throw error;
   }
+}
 
-  if (response?.error) {
-    throw new Error(response.error);
+function normaliseListPageUrl(rawUrl, baseUrl) {
+  if (!rawUrl) {
+    return null;
   }
+  try {
+    const url = new URL(rawUrl, baseUrl || state.listInitialUrl || "https://nobat.ir/");
+    if (!/(^|\.)nobat\.ir$/i.test(url.hostname)) {
+      return null;
+    }
+    url.protocol = "https:";
+    url.hash = "";
+    return url.toString();
+  } catch (error) {
+    return null;
+  }
+}
 
-  const rawLinks = Array.isArray(response?.links) ? response.links : [];
+async function restoreListTab(tabId, targetUrl) {
+  if (!targetUrl) {
+    return;
+  }
+  try {
+    await updateTab(tabId, { url: targetUrl });
+    await waitForTabLoad(tabId);
+  } catch (error) {
+    console.warn("Failed to restore list tab", error);
+  }
+}
+
+async function getDoctorLinksFromTab(tabId) {
   const unique = [];
   const seen = new Set();
+  const visitedPages = new Set();
+  const maxPages = 50;
+  let iterations = 0;
 
-  rawLinks.forEach((link) => {
-    const normalised = normaliseDoctorProfileUrl(link);
-    if (normalised && !seen.has(normalised)) {
-      seen.add(normalised);
-      unique.push(normalised);
+  let initialUrl = state.listInitialUrl || null;
+
+  try {
+    const tab = await getTab(tabId);
+    if (tab?.url) {
+      initialUrl = tab.url;
     }
-  });
+  } catch (error) {
+    console.warn("Failed to read initial list tab URL", error);
+  }
+
+  const normalisedInitial = normaliseListPageUrl(initialUrl, initialUrl);
+  if (normalisedInitial) {
+    visitedPages.add(normalisedInitial);
+  }
+
+  let currentBaseUrl = initialUrl;
+
+  while (iterations < maxPages) {
+    const response = await requestDoctorLinksFromTab(tabId);
+    if (response?.error) {
+      throw new Error(response.error);
+    }
+
+    const rawLinks = Array.isArray(response?.links) ? response.links : [];
+    rawLinks.forEach((link) => {
+      const normalised = normaliseDoctorProfileUrl(link);
+      if (normalised && !seen.has(normalised)) {
+        seen.add(normalised);
+        unique.push(normalised);
+      }
+    });
+
+    const currentTab = await getTab(tabId).catch(() => null);
+    if (currentTab?.url) {
+      currentBaseUrl = currentTab.url;
+      const normalisedCurrent = normaliseListPageUrl(currentBaseUrl, initialUrl);
+      if (normalisedCurrent) {
+        visitedPages.add(normalisedCurrent);
+      }
+    }
+
+    const nextPageRaw = response?.nextPageUrl;
+    const nextPageUrl = normaliseListPageUrl(nextPageRaw, currentBaseUrl || initialUrl);
+
+    if (!nextPageUrl || visitedPages.has(nextPageUrl)) {
+      break;
+    }
+
+    visitedPages.add(nextPageUrl);
+    iterations += 1;
+
+    await updateTab(tabId, { url: nextPageUrl });
+    await waitForTabLoad(tabId);
+  }
+
+  if (normalisedInitial) {
+    let currentNormalised = null;
+    try {
+      const currentTab = await getTab(tabId);
+      if (currentTab?.url) {
+        currentNormalised = normaliseListPageUrl(currentTab.url, initialUrl);
+      }
+    } catch (error) {
+      console.warn("Failed to read list tab URL during restore", error);
+    }
+
+    if (currentNormalised !== normalisedInitial) {
+      await restoreListTab(tabId, normalisedInitial);
+    }
+  }
 
   return unique;
 }
@@ -646,7 +819,7 @@ async function createScraperTab(url) {
   const tab = await createTab(createOptions);
   state.scraperTabId = tab.id;
   if (typeof tab?.id === "number") {
-    await setTabAutoDiscardable(tab.id, true);
+    await setTabAutoDiscardable(tab.id, false);
   }
   await waitForTabLoad(tab.id);
   return tab.id;
@@ -662,7 +835,7 @@ async function ensureScraperTab(url) {
     try {
       await updateTab(state.scraperTabId, { url: targetUrl, active: false });
       if (Number.isInteger(state.scraperTabId)) {
-        await setTabAutoDiscardable(state.scraperTabId, true);
+        await setTabAutoDiscardable(state.scraperTabId, false);
       }
       await waitForTabLoad(state.scraperTabId);
       return state.scraperTabId;
@@ -818,6 +991,7 @@ function resetState() {
   state.listTabId = null;
   state.listWindowId = null;
   state.listTabIndex = null;
+  state.listInitialUrl = null;
   state.scraperTabId = null;
   state.errors = [];
   state.lastDoctor = null;
@@ -930,6 +1104,8 @@ async function handleStartScraping(options = {}) {
   state.listTabId = activeTab.id;
   state.listWindowId = activeTab.windowId ?? null;
   state.listTabIndex = typeof activeTab.index === "number" ? activeTab.index + 1 : null;
+  const initialListUrl = normaliseListPageUrl(activeTab.url || null, activeTab.url || null);
+  state.listInitialUrl = initialListUrl || activeTab.url || null;
 
   await cleanupScraperTab();
 
