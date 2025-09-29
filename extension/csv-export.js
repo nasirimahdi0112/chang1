@@ -56,22 +56,88 @@ function escapeCsvValue(value) {
   return str;
 }
 
+function getOfficeFieldValues(office, pluralKey, singularKey) {
+  if (!office || typeof office !== "object") {
+    return [];
+  }
+
+  const values = [];
+  const seen = new Set();
+
+  function add(value) {
+    if (value === undefined || value === null) {
+      return;
+    }
+    if (Array.isArray(value)) {
+      value.forEach((item) => add(item));
+      return;
+    }
+
+    const normalised = normaliseValue(value);
+    if (!normalised) {
+      return;
+    }
+    if (seen.has(normalised)) {
+      return;
+    }
+    seen.add(normalised);
+    values.push(normalised);
+  }
+
+  add(office[pluralKey]);
+  if (singularKey) {
+    add(office[singularKey]);
+  }
+
+  return values;
+}
+
 export function convertToCsv(rows) {
   const normalisedRows = Array.isArray(rows) ? rows : [];
-  const maxOfficeCount = normalisedRows.reduce((max, row) => {
+  const officeMetrics = [];
+
+  normalisedRows.forEach((row) => {
     const offices = Array.isArray(row?.offices) ? row.offices : [];
-    return Math.max(max, offices.length);
-  }, 0);
+    offices.forEach((office, index) => {
+      if (!officeMetrics[index]) {
+        officeMetrics[index] = { addressColumns: 0, phoneColumns: 0 };
+      }
+
+      const addresses = getOfficeFieldValues(office, "addresses", "address");
+      const phones = getOfficeFieldValues(office, "phones", "phone");
+
+      officeMetrics[index].addressColumns = Math.max(
+        officeMetrics[index].addressColumns,
+        addresses.length
+      );
+      officeMetrics[index].phoneColumns = Math.max(
+        officeMetrics[index].phoneColumns,
+        phones.length
+      );
+    });
+  });
 
   const dynamicHeaders = [];
-  for (let index = 0; index < maxOfficeCount; index += 1) {
+  officeMetrics.forEach((metrics, index) => {
     const position = index + 1;
-    dynamicHeaders.push(
-      { label: `Office ${position} City`, key: `office_${index}_city` },
-      { label: `Office ${position} Address`, key: `office_${index}_address` },
-      { label: `Office ${position} Phones`, key: `office_${index}_phones` }
-    );
-  }
+    dynamicHeaders.push({ label: `Office ${position} City`, key: `office_${index}_city` });
+
+    const addressColumnCount = Math.max(1, metrics.addressColumns);
+    for (let addressIndex = 0; addressIndex < addressColumnCount; addressIndex += 1) {
+      dynamicHeaders.push({
+        label: `Office ${position} Address ${addressIndex + 1}`,
+        key: `office_${index}_address_${addressIndex}`,
+      });
+    }
+
+    const phoneColumnCount = Math.max(1, metrics.phoneColumns);
+    for (let phoneIndex = 0; phoneIndex < phoneColumnCount; phoneIndex += 1) {
+      dynamicHeaders.push({
+        label: `Office ${position} Phone ${phoneIndex + 1}`,
+        key: `office_${index}_phone_${phoneIndex}`,
+      });
+    }
+  });
 
   const headers = [...BASE_HEADERS, ...dynamicHeaders];
   const headerLine = headers.map((header) => header.label).join(",");
@@ -82,12 +148,22 @@ export function convertToCsv(rows) {
     const baseValues = BASE_HEADERS.map((header) => escapeCsvValue(row?.[header.key]));
 
     const officeValues = [];
-    for (let index = 0; index < maxOfficeCount; index += 1) {
+    officeMetrics.forEach((metrics, index) => {
       const office = offices[index] || {};
       officeValues.push(escapeCsvValue(office.city));
-      officeValues.push(escapeCsvValue(office.addresses || office.address));
-      officeValues.push(escapeCsvValue(office.phones));
-    }
+
+      const addressValues = getOfficeFieldValues(office, "addresses", "address");
+      const addressColumnCount = Math.max(1, metrics.addressColumns);
+      for (let addressIndex = 0; addressIndex < addressColumnCount; addressIndex += 1) {
+        officeValues.push(escapeCsvValue(addressValues[addressIndex]));
+      }
+
+      const phoneValues = getOfficeFieldValues(office, "phones", "phone");
+      const phoneColumnCount = Math.max(1, metrics.phoneColumns);
+      for (let phoneIndex = 0; phoneIndex < phoneColumnCount; phoneIndex += 1) {
+        officeValues.push(escapeCsvValue(phoneValues[phoneIndex]));
+      }
+    });
 
     return [...baseValues, ...officeValues].join(",");
   });

@@ -713,15 +713,15 @@ function collectOfficeAddresses(structuredEntries) {
     }
     const addresses = Array.isArray(details.addresses)
       ? details.addresses
-      : details.addresses
-      ? [details.addresses]
+      : details.address
+      ? [details.address]
       : [];
     addresses.forEach((address) => officeAddressCollector.add(address));
 
     const phones = Array.isArray(details.phones)
       ? details.phones
-      : details.phones
-      ? [details.phones]
+      : details.phone
+      ? [details.phone]
       : [];
     phones.forEach((phone) => officePhoneCollector.add(phone));
 
